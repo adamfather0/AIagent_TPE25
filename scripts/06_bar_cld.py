@@ -69,7 +69,7 @@ UNIT_OF = {
 
 
 def _load_hsd(response: str) -> pd.DataFrame | None:
-    f = TBL / f"hsd_{response}_summary.csv"
+    f = TBL / f"lsd_{response}_summary.csv"
     if not f.exists():
         return None
     d = pd.read_csv(f)
@@ -148,8 +148,8 @@ for ax in axes.flat[made:]:
 
 fig.legend(handles=_legend_handles(), loc="lower center",
            ncol=5, fontsize=9, frameon=False, bbox_to_anchor=(0.5, -0.01))
-fig.suptitle("Treatment means ± SE with Tukey HSD letters "
-             "(α = 0.05; bars sharing a letter are not significantly different)",
+fig.suptitle("Treatment means ± SE with Fisher's LSD letters "
+             "(p < 0.05; bars sharing a letter are not significantly different)",
              fontsize=12, y=1.00)
 fig.tight_layout(rect=(0, 0.03, 1, 0.99))
 fig.savefig(FIG / "bar_cld_panel.png", dpi=300, bbox_inches="tight")
@@ -157,10 +157,10 @@ plt.close(fig)
 print(f"Wrote {FIG}/bar_cld_panel.png  ({made} responses)")
 
 # ── individual figures for every HSD-tested response ──────────────────────
-hsd_files = sorted(TBL.glob("hsd_*_summary.csv"))
+hsd_files = sorted(TBL.glob("lsd_*_summary.csv"))
 n_individual = 0
 for f in hsd_files:
-    response = f.stem.replace("hsd_", "").replace("_summary", "")
+    response = f.stem.replace("lsd_", "").replace("_summary", "")
     fig, ax = plt.subplots(figsize=(7, 4.5))
     if _bar_cld(ax, response):
         ax.legend(handles=_legend_handles(), loc="upper left",

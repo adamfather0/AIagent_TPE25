@@ -7,14 +7,14 @@ For each numeric response:
   4. Three-way ANOVA (Type III SS): Soil * Fertilizer * Biochar (all rows)
      plus a two-way ANOVA restricted to fertilized rows (T3-T8) for the
      Biochar main effect and its Soil interaction.
-  5. One-way ANOVA by Treatment + Tukey HSD compact letter display.
+  5. One-way ANOVA by Treatment + Fisher's LSD compact letter display (p < 0.05).
 
 Outputs
 -------
 outputs/tables/anova_summary.csv          — Type III F-tables (all responses)
 outputs/tables/anova_diagnostics.csv      — per-response normality/homogeneity
-outputs/tables/hsd_<response>.csv         — Tukey HSD pairwise p-values
-outputs/tables/hsd_<response>_summary.csv — mean, SE, letter group per treatment
+outputs/tables/lsd_<response>.csv         — Fisher's LSD pairwise p-values
+outputs/tables/lsd_<response>_summary.csv — mean, SE, letter group per treatment
 outputs/figures/residuals_<response>.png  — Q-Q + fitted-vs-residuals
 """
 
@@ -193,19 +193,20 @@ def run_one(response: str) -> dict:
         if key in fit_use:
             result.setdefault("anova_tables", []).append(fit_use[key])
 
-    # ── Tukey HSD on final scale ───────────────────────────────────────────
+    # ── Fisher's LSD on final scale (pairwise t-test, pooled var, no adj.) ──
     try:
-        ph = sp.posthoc_tukey(sub_t_use, val_col=ycol_use, group_col="Treatment")
-        ph.to_csv(TBL / f"hsd_{response}.csv")
-        letters = _tukey_letters(ph)
+        ph = sp.posthoc_ttest(sub_t_use, val_col=ycol_use, group_col="Treatment",
+                              equal_var=True, p_adjust=None)
+        ph.to_csv(TBL / f"lsd_{response}.csv")
+        letters = _tukey_letters(ph)          # same letter-grouping logic, alpha=0.05
         # Means and SE on original (back-transformed if log1p) scale.
         means_orig = sub_t.groupby("Treatment")[response].mean().rename("mean")
         se_orig    = sub_t.groupby("Treatment")[response].sem().rename("se")
-        hsd_sum = pd.concat([means_orig, se_orig, letters], axis=1)
-        hsd_sum.insert(0, "transform", transform)
-        hsd_sum.to_csv(TBL / f"hsd_{response}_summary.csv")
+        lsd_sum = pd.concat([means_orig, se_orig, letters], axis=1)
+        lsd_sum.insert(0, "transform", transform)
+        lsd_sum.to_csv(TBL / f"lsd_{response}_summary.csv")
     except Exception as e:
-        result["hsd_error"] = str(e)
+        result["lsd_error"] = str(e)
 
     # ── Diagnostic plot on final scale ────────────────────────────────────
     try:
