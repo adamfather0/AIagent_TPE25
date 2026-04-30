@@ -65,29 +65,73 @@ def _check(residuals: np.ndarray, groups: list[np.ndarray]) -> tuple[float, floa
     return float(sw_p), float(lev_p)
 
 
-def _tukey_letters(ph: pd.DataFrame, alpha: float = 0.05) -> pd.Series:
-    groups = list(ph.index)
-    n = len(groups)
-    letters: list[set] = [set() for _ in range(n)]
-    assigned = [False] * n
-    letter_idx = 0
+def _cld_letters(ph: pd.DataFrame, means: pd.Series,
+                  alpha: float = 0.05) -> pd.Series:
+    """Piepho (2004) sweep algorithm for compact letter display.
 
+    'a' is assigned to the group with the highest mean; subsequent letters
+    follow in descending mean order.  Groups that share a letter are not
+    significantly different at the given alpha level.
+    """
+    # Order groups by descending mean — determines letter priority
+    groups = means.reindex(ph.index).sort_values(ascending=False).index.tolist()
+    n = len(groups)
+    if n == 0:
+        return pd.Series(dtype=str)
+
+    # Build significance lookup (i < j in mean-sorted order)
+    sig: dict[tuple[int, int], bool] = {}
     for i in range(n):
         for j in range(i + 1, n):
-            if ph.iloc[i, j] >= alpha:
-                ltr = chr(ord("a") + letter_idx)
-                letters[i].add(ltr)
-                letters[j].add(ltr)
-                assigned[i] = assigned[j] = True
-        letter_idx += 1
+            gi, gj = groups[i], groups[j]
+            try:
+                p = float(ph.loc[gi, gj])
+            except (KeyError, TypeError):
+                p = 1.0
+            sig[(i, j)] = p < alpha
 
-    for i in range(n):
-        if not assigned[i]:
-            letters[i].add(chr(ord("a") + letter_idx))
-            letter_idx += 1
+    # Start: one absorption containing all group indices
+    absorptions: list[frozenset] = [frozenset(range(n))]
 
-    return pd.Series(["".join(sorted(s)) for s in letters],
-                     index=groups, name="group")
+    # Sweep: for each significantly different pair, split absorptions
+    for (i, j), is_sig in sig.items():
+        if not is_sig:
+            continue
+        new_abs: list[frozenset] = []
+        for ab in absorptions:
+            if i in ab and j in ab:
+                new_abs.append(ab - {j})   # keep i, drop j
+                new_abs.append(ab - {i})   # keep j, drop i
+            else:
+                new_abs.append(ab)
+        # Deduplicate (frozensets are hashable)
+        seen: set[frozenset] = set()
+        absorptions = []
+        for ab in new_abs:
+            if ab and ab not in seen:
+                seen.add(ab)
+                absorptions.append(ab)
+
+    # Remove proper subsets (redundant absorptions)
+    absorptions = [
+        ab for ab in absorptions
+        if not any(ab < other for other in absorptions)
+    ]
+
+    # Sort so the absorption containing the highest-mean group gets letter 'a'
+    absorptions = sorted(absorptions, key=lambda ab: min(ab))
+
+    # Assign letters and build result
+    group_letters: dict[str, list[str]] = {g: [] for g in groups}
+    for letter_idx, ab in enumerate(absorptions):
+        ltr = chr(ord("a") + letter_idx)
+        for idx in ab:
+            group_letters[groups[idx]].append(ltr)
+
+    return pd.Series(
+        {g: "".join(sorted(group_letters[g])) if group_letters[g] else "?" for g in groups},
+        name="group",
+    )
 
 
 def _fit_all(sub_all: pd.DataFrame, sub_fert: pd.DataFrame,
@@ -198,10 +242,11 @@ def run_one(response: str) -> dict:
         ph = sp.posthoc_ttest(sub_t_use, val_col=ycol_use, group_col="Treatment",
                               equal_var=True, p_adjust=None)
         ph.to_csv(TBL / f"lsd_{response}.csv")
-        letters = _tukey_letters(ph)          # same letter-grouping logic, alpha=0.05
         # Means and SE on original (back-transformed if log1p) scale.
         means_orig = sub_t.groupby("Treatment")[response].mean().rename("mean")
         se_orig    = sub_t.groupby("Treatment")[response].sem().rename("se")
+        # CLD: 'a' = highest mean, Piepho (2004) sweep algorithm
+        letters = _cld_letters(ph, means_orig)
         lsd_sum = pd.concat([means_orig, se_orig, letters], axis=1)
         lsd_sum.insert(0, "transform", transform)
         lsd_sum.to_csv(TBL / f"lsd_{response}_summary.csv")
