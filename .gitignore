@@ -1,5 +1,7 @@
-# Generated artifacts
+# Generated artifacts — reproduce with python3 scripts/0*.py
 data/tpe25.pkl
+outputs/figures/
+outputs/tables/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
