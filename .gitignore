@@ -1,0 +1,7 @@
+# Generated artifacts
+data/tpe25.pkl
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.Rhistory
+.RData

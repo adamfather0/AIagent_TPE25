@@ -68,89 +68,98 @@ Source plan PDF: Drive ID `1u6pei4B1yrvSeF_sv1b2MZHG3phRQ2QG`
 ├── data/
 │   └── 2025TPE_raw.xlsx
 ├── scripts/
-│   ├── 01_load_clean.R
-│   ├── 02_anova_posthoc.R
-│   ├── 03_correlation.R
-│   ├── 04_pca.R
-│   └── 05_nue_summary.R
+│   ├── 01_load_clean.py
+│   ├── 02_anova_posthoc.py
+│   ├── 03_correlation.py
+│   ├── 04_pca.py
+│   └── 05_nue_summary.py
 └── outputs/
     ├── figures/                    # 300 dpi PNGs from each script
     └── tables/                     # ANOVA + post-hoc CSVs
 ```
 
-Scripts beyond `01_load_clean.R` are written on-demand in subsequent sessions.
+The raw xlsx has multiple sheets; the analysis uses the **`summary`** sheet only. The sheet contains 32 valid observation rows (8 treatments × 4 reps) followed by ~46 trailing summary/junk rows that `01_load_clean.py` filters out by keeping only rows with `Treatment ∈ {T1..T8}`.
+
+Scripts beyond `01_load_clean.py` are written on-demand in subsequent sessions.
 
 ## 5. Analysis stack
 
-R ≥ 4.3. Install once:
+Python ≥ 3.11. Install once:
 
-```r
-install.packages(c(
-  "tidyverse", "readxl", "janitor",
-  "agricolae", "emmeans", "car",
-  "corrplot", "FactoMineR", "factoextra",
-  "ggplot2", "patchwork"
-))
+```bash
+pip install pandas openpyxl numpy scipy statsmodels pingouin \
+            scikit-learn scikit-posthocs seaborn matplotlib
 ```
+
+| Purpose                  | Library                                       |
+|--------------------------|-----------------------------------------------|
+| Read xlsx                | `pandas` + `openpyxl`                         |
+| ANOVA (Type III)         | `statsmodels.formula.api.ols` + `anova_lm`    |
+| Post-hoc (Tukey HSD, letter groups) | `pingouin.pairwise_tukey`, `scikit_posthocs` |
+| Estimated marginal means | `statsmodels.stats.multicomp` / `pingouin`    |
+| PCA, k-means             | `scikit-learn` (`PCA`, `KMeans`, `StandardScaler`) |
+| Plots                    | `matplotlib`, `seaborn`                       |
 
 ## 6. Analysis workflow
 
-### `scripts/01_load_clean.R`
-- `readxl::read_excel("data/2025TPE_raw.xlsx", skip = 1)` then drop the units row, OR read with `col_types` and discard row 1 of the data.
-- `janitor::clean_names()` for safe column names.
-- Recode `"#VALUE!"` → `NA`; coerce numerics.
-- Set factor order: `Treatment` = T1..T8; `Soil` = Red_soil, Alluvial_soil; `Biochar` = NO, Rice_husk, Leucaena; `Fertilizer` = NO, YES.
-- `saveRDS(df, "data/tpe25.rds")` for downstream scripts.
+### `scripts/01_load_clean.py`
+- Reads sheet `"summary"`: row 1 = headers, row 2 = units (skipped), data starts row 3.
+- Normalizes column names: trims trailing spaces (`Treatment `, `Plant_height_20DAT `, `Plant_height_35DAT `), strips trailing `*` (`Dry_matter*`), replaces `/` and inner spaces with `_` (`N uptake`, `Agronomic NUE`, `Physiological Efficiency`, `N/P ratio`).
+- `na_values=["", "NA", "#VALUE!", "#DIV/0!", "#N/A"]`; `pd.to_numeric(..., errors="coerce")` for measurement columns.
+- Sets `pd.Categorical` levels: `Treatment` = T1..T8 (ordered); `Soil` = Red_soil, Alluvial_soil; `Biochar` = NO, Rice_husk, Leucaena; `Fertilizer` = NO, YES; `Rep` = 1..4.
+- Drops trailing summary rows by filtering `Treatment ∈ T1..T8`.
+- Saves `data/tpe25.pkl` as `{"data": df, "units": units_df}`.
 
-### `scripts/02_anova_posthoc.R`
-- Three-way ANOVA per response: `lm(y ~ Soil * Fertilizer * Biochar, data = df)` then `car::Anova(., type = "III")`.
-- Where Biochar is nested under Fertilizer = YES (T1/T2 have no biochar level), restrict to fertilized rows for the Biochar effect, or model the 8 treatments as `lm(y ~ Treatment)` and use planned contrasts.
+### `scripts/02_anova_posthoc.py`
+- For each response `y`: `ols("y ~ C(Soil) * C(Fertilizer) * C(Biochar)", data=df).fit()`, then `sm.stats.anova_lm(model, typ=3)`.
+- Where Biochar is nested under Fertilizer=YES (T1/T2 have no biochar level), either restrict to fertilized rows for the Biochar effect or fit `ols("y ~ C(Treatment)")` and use planned contrasts via `model.t_test()`.
 - Post-hoc:
-  - `agricolae::HSD.test(model, "Treatment", group = TRUE)` for letter groupings.
-  - `emmeans(model, pairwise ~ Soil | Biochar)` for interaction probes.
-- Diagnostics: `plot(model)`, Shapiro–Wilk, Levene; log-transform if heteroscedastic.
+  - `pingouin.pairwise_tukey(data=df, dv=y, between="Treatment")` for pairwise.
+  - `scikit_posthocs.posthoc_tukey` + helper for compact-letter display.
+- Diagnostics: `scipy.stats.shapiro` on residuals, `scipy.stats.levene` for variance; log-transform if heteroscedastic.
 - Outputs: `outputs/tables/anova_<response>.csv`, `outputs/tables/hsd_<response>.csv`.
 
-### `scripts/03_correlation.R`
-- Pearson and Spearman matrices on numeric columns.
-- `corrplot::corrplot(..., order = "hclust")`.
-- Output: `outputs/figures/corr_pearson.png`, `corr_spearman.png`.
+### `scripts/03_correlation.py`
+- Pearson and Spearman: `df[num_cols].corr(method="pearson"|"spearman")`.
+- Heatmap with hierarchical clustering: `sns.clustermap(corr, cmap="vlag", center=0)`.
+- Outputs: `outputs/figures/corr_pearson.png`, `corr_spearman.png`.
 
-### `scripts/04_pca.R`
-- Aggregate to treatment means, scale, `FactoMineR::PCA()`.
-- `factoextra::fviz_pca_biplot()` colored by Soil and shaped by Biochar.
-- Optional k-means (k = 2..4) on PC scores; elbow plot.
+### `scripts/04_pca.py`
+- Aggregate to treatment means, standardize with `StandardScaler`, fit `sklearn.decomposition.PCA`.
+- Biplot (PC1 vs PC2) coloured by Soil, marker by Biochar; loadings as arrows.
+- Optional `KMeans` on PC scores (k=2..4) with elbow plot from `inertia_`.
 - Outputs: `outputs/figures/pca_biplot.png`, `pca_screeplot.png`.
 
-### `scripts/05_nue_summary.R`
+### `scripts/05_nue_summary.py`
 - Filter to fertilized treatments (T3–T8).
-- Group by Soil × Biochar; mean ± SE for `PFPN`, `Agronomic NUE`, `Recovery_rate_N/P/K`, `Physiological Efficiency`.
-- Barplots with error bars (`geom_col` + `geom_errorbar`).
+- `df.groupby(["Soil", "Biochar"])[nue_cols].agg(["mean", "sem"])` for `PFPN`, `Agronomic_NUE`, `Recovery_rate_N/P/K`, `Physiological_Efficiency`.
+- Barplots with error bars via `seaborn.barplot(..., errorbar="se")` or `matplotlib.pyplot.bar` + `errorbar`.
 - Outputs: `outputs/tables/nue_summary.csv`, `outputs/figures/nue_*.png`.
 
 ## 7. Conventions
 
-- `set.seed(2025)` at the top of every analysis script.
-- Figures: `ggsave(..., width = 6, height = 4, dpi = 300)`.
-- Tables: `readr::write_csv()`.
-- All scripts assume the working directory is the repo root and use paths relative to it.
+- `np.random.seed(2025)` at the top of every analysis script.
+- Figures: `plt.savefig(..., dpi=300, bbox_inches="tight")`, default size 6×4 in.
+- Tables: `df.to_csv(..., index=False)`.
+- All scripts assume the working directory is the repo root and use paths relative to it (`pathlib.Path`).
+- Cleaned data is loaded via `pd.read_pickle("data/tpe25.pkl")["data"]`.
 
 ## 8. Hypotheses → tests
 
 | Hypothesis                                              | Test                                                                 |
 |---------------------------------------------------------|----------------------------------------------------------------------|
-| H1 — Biochar boosts fertilizer effect                   | Fertilizer × Biochar interaction in three-way ANOVA; contrast T3 vs (T5,T6) and T4 vs (T7,T8). |
-| H2 — Biochar benefits acidic soil more                  | Soil × Biochar interaction; emmeans contrast `(T5+T6 − T3) vs (T7+T8 − T4)`. |
-| H3 — Rice husk ≈ Leucaena                               | Within fertilized rows, `lm(y ~ Soil * Biochar)` and contrast Rice_husk vs Leucaena per soil. |
+| H1 — Biochar boosts fertilizer effect                   | Fertilizer × Biochar interaction in three-way ANOVA; contrast T3 vs (T5,T6) and T4 vs (T7,T8) via `model.t_test()`. |
+| H2 — Biochar benefits acidic soil more                  | Soil × Biochar interaction; contrast `(T5+T6 − T3) vs (T7+T8 − T4)`. |
+| H3 — Rice husk ≈ Leucaena                               | Within fertilized rows, `ols("y ~ C(Soil) * C(Biochar)")` and contrast Rice_husk vs Leucaena per soil. |
 
 ## 9. Reproduce
 
 ```bash
-Rscript scripts/01_load_clean.R \
-  && Rscript scripts/02_anova_posthoc.R \
-  && Rscript scripts/03_correlation.R \
-  && Rscript scripts/04_pca.R \
-  && Rscript scripts/05_nue_summary.R
+python3 scripts/01_load_clean.py \
+  && python3 scripts/02_anova_posthoc.py \
+  && python3 scripts/03_correlation.py \
+  && python3 scripts/04_pca.py \
+  && python3 scripts/05_nue_summary.py
 ```
 
 ## 10. Source documents
